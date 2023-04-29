@@ -19,6 +19,7 @@
 import json
 import os
 import sys
+import glob
 import guestfs
 
 class GuestfsImage(object):
@@ -143,9 +144,10 @@ class GuestfsImage(object):
                 # partition and location ('target')
                 partn = gfs.list_partitions()[int(tarball['part'])-1]
                 gfs.mount(partn, "/")
-                gfs.tar_in(tarball['source'], tarball['target'],
-                           compress=self.handle_compress(tarball['source']),
-                           xattrs=True, selinux=True, acls=True)
+                for file in tarball['source']:
+                    gfs.tar_in(file, tarball['target'],
+                            compress=self.handle_compress(file),
+                            xattrs=True, selinux=True, acls=True)
                 gfs.sync()
                 gfs.umount_opts("/")
             # do file 'uploads'. in guestfs-speak that means transfer
@@ -157,7 +159,10 @@ class GuestfsImage(object):
                 # partition and location ('target')
                 partn = gfs.list_partitions()[int(upload['part'])-1]
                 gfs.mount(partn, "/")
-                gfs.upload(upload['source'], upload['target'])
+                for file in upload['source']:
+                    target = upload['target'] if os.path.basename(upload['target']) \
+                        else os.path.join(os.path.abspath(upload['target']), os.path.basename(file))
+                    gfs.upload(file, target)
                 gfs.sync()
                 gfs.umount_opts("/")
             # do file 'writes' (create a file with a given string as
@@ -214,14 +219,14 @@ def main():
         newdir = os.path.dirname(os.path.abspath(sys.argv[1]))
         os.chdir(newdir)
         for tarball in tarballs:
-            tarball['source'] = os.path.realpath(os.path.expanduser(tarball['source']))
+            tarball['source'] = glob.glob(os.path.expanduser(tarball['source']))
         for upload in uploads:
-            upload['source'] = os.path.realpath(os.path.expanduser(upload['source']))
-        os.chdir(olddir)
+            upload['source'] = glob.glob(os.path.expanduser(upload['source']))
 
         img = GuestfsImage(name, size, imgver, filesystem, label, parts,
                            tarballs, uploads, writes)
         img.create()
+        os.chdir(olddir)
 
     except KeyboardInterrupt:
         sys.stderr.write("Interrupted, exiting...\n")

@@ -53,6 +53,11 @@ Create disk image file for embedded system or virtual machine.
             "part" : "1",
             "target" : "/boot.bin",
             "source" : "fat_files/boot.bin"
+        },
+		{
+            "part" : "2",
+            "target" : "/root/",
+            "source" : "misc_files/*"
         }
     ],
     "writes" : [
