@@ -65,6 +65,8 @@ class GuestfsImage(object):
         self.outdated = False
         self.filesystem = filesystem
         self.label = label
+        # Start at 1M offset
+        self.offset = 2048
         self.parts = []
         self.tarballs = []
         self.uploads = []
@@ -108,7 +110,15 @@ class GuestfsImage(object):
                 # for primary, 'l' for logical, 'e' for extended), and
                 # start and end sector numbers - more details in
                 # guestfs docs
-                gfs.part_add(disk, part['type'], int(part['start']), int(part['end']))
+                start = int(part.get('start', '0'))
+                end = int(part.get('end', '0'))
+                size = int(self.handle_size(part.get('size', '0')) / 512)
+                if start == 0:
+                    start = self.offset
+                if end == 0 and size != 0:
+                    end = start + size - 1
+                self.offset = end + 1
+                gfs.part_add(disk, part['type'], start, end)
                 # identify the partition
                 partname = gfs.list_partitions()[-1]
                 partnum = gfs.part_list(disk)[-1]["part_num"]
@@ -121,7 +131,10 @@ class GuestfsImage(object):
                     id = int(mbr_type, base=16)
                     gfs.part_set_mbr_id(disk, partnum, id)
                 # format the partition
-                gfs.mkfs(part['filesystem'], partname, label=part.get('label'))
+                if part['filesystem'] == 'swap':
+                    gfs.mkswap(partname, label=part.get('label'))
+                else:
+                    gfs.mkfs(part['filesystem'], partname, label=part.get('label'))
             # do 'tar-in'. in guestfs-speak that means extract
             # a tarball from the host to the image, we use it to create
             # rootfs in the image

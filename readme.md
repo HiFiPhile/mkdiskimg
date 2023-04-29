@@ -9,7 +9,7 @@ Create disk image file for embedded system or virtual machine.
 ## Example configuration file
 
 - Create `full.img` with 64M size and mbr label.
-- Create one 1M vfat partition and one ext4 partition for remaining space.
+- Create one 1M vfat partition; one 50M ext4 partition, and remaining space for a swap partition. Size can be specified by `start` and `end` sector, or with `size`.
 - Extract rootfs archieve `root_fs/rootfs.tar.gz` to ext4 partition.
 - Copy `fat_files/boot.bin` to vfat partition.
 - Write `Hello, world!` in `testfile` of vfat partition.
@@ -32,8 +32,13 @@ Create disk image file for embedded system or virtual machine.
             "filesystem" : "ext4",
             "type" : "p",
             "mbr_type" : "0x83",
-            "start" : "4096",
-            "end" : "-64"
+            "size" : "60M"
+        },
+        {
+            "filesystem" : "swap",
+            "type" : "p",
+            "mbr_type" : "0x82",
+            "end" : "-40"
         }
     ],
     "tarballs" : [
