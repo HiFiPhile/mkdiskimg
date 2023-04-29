@@ -68,6 +68,7 @@ class GuestfsImage(object):
         self.label = label
         # Start at 1M offset
         self.offset = 2048
+        self.offsetex = 2048
         self.parts = []
         self.tarballs = []
         self.uploads = []
@@ -115,14 +116,21 @@ class GuestfsImage(object):
                 end = int(part.get('end', '0'))
                 size = int(self.handle_size(part.get('size', '0')) / 512)
                 if start == 0:
-                    start = self.offset
+                    start =  self.offsetex if part['type'] == 'l' else self.offset
                 if end == 0 and size != 0:
                     end = start + size - 1
-                self.offset = end + 1
+                if part['type'] == 'p':
+                    self.offset = end + 1
+                if part['type'] == 'e':
+                    self.offset = end + 1
+                    # Logical partition start at 1M after extended partition
+                    self.offsetex = start + 2048
+                if part['type'] == 'l':
+                    self.offsetex = end + 2049
                 gfs.part_add(disk, part['type'], start, end)
                 # identify the partition
-                partname = gfs.list_partitions()[-1]
                 partnum = gfs.part_list(disk)[-1]["part_num"]
+                partname = f'/dev/sda{str(partnum)}'
                 # sometimes, we want to set the gpt type of the partition
                 gpt_type = part.get("gpt_type", None)
                 mbr_type = part.get("mbr_type", None)
@@ -131,18 +139,20 @@ class GuestfsImage(object):
                 if self.label =='mbr' and mbr_type:
                     id = int(mbr_type, base=16)
                     gfs.part_set_mbr_id(disk, partnum, id)
+                if part['type'] != 'e':
                 # format the partition
-                if part['filesystem'] == 'swap':
-                    gfs.mkswap(partname, label=part.get('label'))
-                else:
-                    gfs.mkfs(part['filesystem'], partname, label=part.get('label'))
+                    if part['filesystem'] == 'swap':
+                        gfs.mkswap(partname, label=part.get('label'))
+                    else:
+                        gfs.mkfs(part['filesystem'], partname, label=part.get('label'))
+                        print(f"fs:{part['filesystem']} name:{partname}")
             # do 'tar-in'. in guestfs-speak that means extract
             # a tarball from the host to the image, we use it to create
             # rootfs in the image
             for tarball in self.tarballs:
                 # as with write, the dict must specify a target
                 # partition and location ('target')
-                partn = gfs.list_partitions()[int(tarball['part'])-1]
+                partn = f"/dev/sda{tarball['part']}"
                 gfs.mount(partn, "/")
                 for file in tarball['source']:
                     gfs.tar_in(file, tarball['target'],
@@ -157,7 +167,7 @@ class GuestfsImage(object):
             for upload in self.uploads:
                 # as with write, the dict must specify a target
                 # partition and location ('target')
-                partn = gfs.list_partitions()[int(upload['part'])-1]
+                partn = f"/dev/sda{upload['part']}"
                 gfs.mount(partn, "/")
                 for file in upload['source']:
                     target = upload['target'] if os.path.basename(upload['target']) \
@@ -171,7 +181,7 @@ class GuestfsImage(object):
                 # the write dict must specify the partition to be
                 # written to, numbered from 1 as humans usually do;
                 # find that part and mount it
-                partn = gfs.list_partitions()[int(write['part'])-1]
+                partn = f"/dev/sda{write['part']}"
                 gfs.mount(partn, "/")
                 # do the write: the dict must specify the target path
                 # and the string to be written ('content')
