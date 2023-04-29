@@ -12,6 +12,7 @@ Create disk image file for embedded system or virtual machine.
 - Create one 1M vfat partition; one 50M ext4 partition, and remaining space for a swap partition. Size can be specified by `start` and `end` sector, or with `size`.
 - Extract rootfs archieve `root_fs/rootfs.tar.gz` to ext4 partition.
 - Copy `fat_files/boot.bin` to vfat partition.
+- Copy all files from `misc_files` to `/root/` of ext4 partition.
 - Write `Hello, world!` in `testfile` of vfat partition.
 
 ```json
