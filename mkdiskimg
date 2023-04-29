@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+
+# Copyright (c) Red Hat
+# Copyright (c) 2023 Zixun LI (HiFiPhile)
+#
+# mkdiskimg is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+import json
+import os
+import sys
+import guestfs
+
+class GuestfsImage(object):
+    """Class representing an image created by guestfs. 'size' is the
+    desired image size, valid formats are a digit string (size in
+    bytes, digit string plus 'M', 'MB' or 'MiB' (size in power of two
+    megabytes), or digit string plus 'G', 'GB' or 'GiB' (size in power
+    of two gigabytes). 'imgver' is the image 'version' - in practice
+    it's simply a string that gets included in the image file name
+    if specified. 'filesystem' is the default filesystem for the image
+    - it will be used for parts that don't explicitly specify a
+    filesystem. 'label' is the disk label format to be used. parts is
+    lists of dicts that specify the partitions that should be created.
+    parts, tarballs, uploads, and writes are lists of dicts that specify
+    the tarballs and files that should be written or copied
+    ('uploaded') to them.
+    """
+    @staticmethod
+    def handle_size(size):
+        """Simple function to handle sizes like '10G' or '100MB', returns
+        the size in bytes as an int. Used by both image classes.
+        """
+        size = str(size)
+        if size.endswith('G') or size.endswith('GB') or size.endswith('GiB'):
+            return int(size.split('G')[0]) * 1024 * 1024 * 1024
+        elif size.endswith('M') or size.endswith('MB') or size.endswith('MiB'):
+            return int(size.split('M')[0]) * 1024 * 1024
+        else:
+            return int(size)
+
+    @staticmethod
+    def handle_compress(tarname):
+        """Simple function to handle compression method of tarball.
+        """
+        method = {'.gz' : 'gzip', '.bz' : 'bzip2', '.xz' : 'xz', '.Z' : 'compress', '.lzo' : 'lzop'}
+        _, ext = os.path.splitext(tarname)
+        return method.get(ext)
+
+    def __init__(self, name, size, imgver='', filesystem='ext4', label='mbr', parts=None,
+                 tarballs=None, uploads=None, writes=None):
+        self.filename = name
+        self.size = self.handle_size(size)
+        # guestfs images are never outdated
+        self.outdated = False
+        self.filesystem = filesystem
+        self.label = label
+        self.parts = []
+        self.tarballs = []
+        self.uploads = []
+        self.writes = []
+        if parts:
+            self.parts = parts
+        if tarballs:
+            self.tarballs = tarballs
+        if uploads:
+            self.uploads = uploads
+        if writes:
+            self.writes = writes
+
+        if imgver:
+            self.filename = "{0}_{1}".format(self.filename, imgver)
+        self.filename = "{0}.img".format(self.filename)
+
+    def create(self):
+        """Create the image. The unused arg is the 'textinst' arg that
+        only VirtInstallImages care about (but which has to be passed
+        here too).
+        """
+        gfs = guestfs.GuestFS(python_return_dict=True)
+        try:
+            # Create the disk image with a temporary name
+            tmpfile = "{0}.tmp".format(self.filename)
+            gfs.disk_create(tmpfile, "raw", int(self.size))
+            # 'launch' guestfs with the disk attached
+            gfs.add_drive_opts(tmpfile, format="raw", readonly=0)
+            gfs.launch()
+            # identify the disk and create a disk label
+            disk = gfs.list_devices()[0]
+            gfs.part_init(disk, self.label)
+            # create and format the partitions
+            for part in self.parts:
+                # each partition can specify a filesystem, if it doesn't,
+                # we use the image default
+                if 'filesystem' not in part:
+                    part['filesystem'] = self.filesystem
+                # create the partition: the dict must specify type ('p'
+                # for primary, 'l' for logical, 'e' for extended), and
+                # start and end sector numbers - more details in
+                # guestfs docs
+                gfs.part_add(disk, part['type'], int(part['start']), int(part['end']))
+                # identify the partition
+                partname = gfs.list_partitions()[-1]
+                partnum = gfs.part_list(disk)[-1]["part_num"]
+                # sometimes, we want to set the gpt type of the partition
+                gpt_type = part.get("gpt_type", None)
+                mbr_type = part.get("mbr_type", None)
+                if self.label =='gpt' and gpt_type:
+                    gfs.part_set_gpt_type(disk, partnum, gpt_type)
+                if self.label =='mbr' and mbr_type:
+                    id = int(mbr_type, base=16)
+                    gfs.part_set_mbr_id(disk, partnum, id)
+                # format the partition
+                gfs.mkfs(part['filesystem'], partname, label=part.get('label'))
+            # do 'tar-in'. in guestfs-speak that means extract
+            # a tarball from the host to the image, we use it to create
+            # rootfs in the image
+            for tarball in self.tarballs:
+                # as with write, the dict must specify a target
+                # partition and location ('target')
+                partn = gfs.list_partitions()[int(tarball['part'])-1]
+                gfs.mount(partn, "/")
+                gfs.tar_in(tarball['source'], tarball['target'],
+                           compress=self.handle_compress(tarball['source']),
+                           xattrs=True, selinux=True, acls=True)
+                gfs.sync()
+                gfs.umount_opts("/")
+            # do file 'uploads'. in guestfs-speak that means transfer
+            # a file from the host to the image, we use it to mean
+            # download a file from an http server and transfer that
+            # to the image
+            for upload in self.uploads:
+                # as with write, the dict must specify a target
+                # partition and location ('target')
+                partn = gfs.list_partitions()[int(upload['part'])-1]
+                gfs.mount(partn, "/")
+                gfs.upload(upload['source'], upload['target'])
+                gfs.sync()
+                gfs.umount_opts("/")
+            # do file 'writes' (create a file with a given string as
+            # its content)
+            for write in self.writes:
+                # the write dict must specify the partition to be
+                # written to, numbered from 1 as humans usually do;
+                # find that part and mount it
+                partn = gfs.list_partitions()[int(write['part'])-1]
+                gfs.mount(partn, "/")
+                # do the write: the dict must specify the target path
+                # and the string to be written ('content')
+                gfs.write(write['path'], write['content'])
+                gfs.sync()
+                gfs.umount_opts("/")
+            # we're all done! rename to the correct name
+            os.rename(tmpfile, self.filename)
+        except:
+            # if anything went wrong, we want to wipe the temp file
+            # then raise
+            os.remove(tmpfile)
+            raise
+        finally:
+            # whether things go right or wrong, we want to close the
+            # gfs instance, and rwmj recommends 'shutdown()' too
+            gfs.shutdown()
+            gfs.close()
+
+def main():
+    """Main loop - set up logging, parse args, run subcommand
+    function.
+    """
+    if len(sys.argv) != 2:
+        print("mkdiskimg <config file>")
+        print("")
+        print("Create disk image file from configuration.")
+        sys.exit(1)
+    try:
+        with open(sys.argv[1], 'r') as fout:
+            disk = json.load(fout)
+        name = disk['name']
+        size = disk['size']
+        parts = disk['parts']
+        # These are optional
+        tarballs = disk.get('tarballs', [])
+        uploads = disk.get('uploads', [])
+        writes = disk.get('writes')
+        imgver = disk.get('imgver')
+        label = disk.get('label', 'mbr')
+        filesystem = disk.get('filesystem', 'ext4')
+
+        # Fix path
+        olddir = os.getcwd()
+        newdir = os.path.dirname(os.path.abspath(sys.argv[1]))
+        os.chdir(newdir)
+        for tarball in tarballs:
+            tarball['source'] = os.path.realpath(os.path.expanduser(tarball['source']))
+        for upload in uploads:
+            upload['source'] = os.path.realpath(os.path.expanduser(upload['source']))
+        os.chdir(olddir)
+
+        img = GuestfsImage(name, size, imgver, filesystem, label, parts,
+                           tarballs, uploads, writes)
+        img.create()
+
+    except KeyboardInterrupt:
+        sys.stderr.write("Interrupted, exiting...\n")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()
