@@ -47,6 +47,8 @@ class GuestfsImage(object):
             return int(size.split('G')[0]) * 1024 * 1024 * 1024
         elif size.endswith('M') or size.endswith('MB') or size.endswith('MiB'):
             return int(size.split('M')[0]) * 1024 * 1024
+        elif size.endswith('K') or size.endswith('KB') or size.endswith('KiB'):
+            return int(size.split('K')[0]) * 1024
         else:
             return int(size)
 
@@ -59,7 +61,7 @@ class GuestfsImage(object):
         return method.get(ext)
 
     def __init__(self, name, size, imgver='', filesystem='ext4', label='mbr', parts=None,
-                 tarballs=None, uploads=None, writes=None):
+                 tarballs=None, uploads=None, writes=None, binarys=None):
         self.filename = name
         self.size = self.handle_size(size)
         # guestfs images are never outdated
@@ -73,6 +75,7 @@ class GuestfsImage(object):
         self.tarballs = []
         self.uploads = []
         self.writes = []
+        self.binarys = []
         if parts:
             self.parts = parts
         if tarballs:
@@ -81,6 +84,8 @@ class GuestfsImage(object):
             self.uploads = uploads
         if writes:
             self.writes = writes
+        if binarys:
+            self.binarys = binarys
 
         if imgver:
             self.filename = "{0}_{1}".format(self.filename, imgver)
@@ -139,13 +144,14 @@ class GuestfsImage(object):
                 if self.label =='mbr' and mbr_type:
                     id = int(mbr_type, base=16)
                     gfs.part_set_mbr_id(disk, partnum, id)
+                if self.label =='mbr' and part.get("active", False):
+                    gfs.part_set_bootable(disk, partnum, True)
                 if part['type'] != 'e':
                 # format the partition
                     if part['filesystem'] == 'swap':
                         gfs.mkswap(partname, label=part.get('label'))
                     else:
                         gfs.mkfs(part['filesystem'], partname, label=part.get('label'))
-                        print(f"fs:{part['filesystem']} name:{partname}")
             # do 'tar-in'. in guestfs-speak that means extract
             # a tarball from the host to the image, we use it to create
             # rootfs in the image
@@ -188,6 +194,22 @@ class GuestfsImage(object):
                 gfs.write(write['path'], write['content'])
                 gfs.sync()
                 gfs.umount_opts("/")
+            # do binary raw writes
+            for binary in self.binarys:
+                with open(binary['source'], 'rb') as f:
+                    source_offset = int(binary.get('source_offset', '0'), base=0)
+                    target_offset = int(binary.get('target_offset', '0'), base=0)
+                    size = self.handle_size(binary.get('size', '0'))
+                    if size == 0:
+                        size = os.path.getsize(binary['source']) - source_offset
+                    f.seek(source_offset)
+                    data = f.read(0x10000 if size > 0x10000 else size)
+                    while data:
+                        gfs.pwrite_device('/dev/sda', data, target_offset)
+                        size -= len(data)
+                        if size == 0: break
+                        target_offset += len(data)
+                        data = f.read(0x10000 if size > 0x10000 else size)
             # we're all done! rename to the correct name
             os.rename(tmpfile, self.filename)
         except:
@@ -219,7 +241,8 @@ def main():
         # These are optional
         tarballs = disk.get('tarballs', [])
         uploads = disk.get('uploads', [])
-        writes = disk.get('writes')
+        writes = disk.get('writes', [])
+        binarys = disk.get('binarys', [])
         imgver = disk.get('imgver')
         label = disk.get('label', 'mbr')
         filesystem = disk.get('filesystem', 'ext4')
@@ -232,9 +255,11 @@ def main():
             tarball['source'] = glob.glob(os.path.expanduser(tarball['source']))
         for upload in uploads:
             upload['source'] = glob.glob(os.path.expanduser(upload['source']))
+        for binary in binarys:
+            binary['source'] = os.path.expanduser(binary['source'])
 
         img = GuestfsImage(name, size, imgver, filesystem, label, parts,
-                           tarballs, uploads, writes)
+                           tarballs, uploads, writes, binarys)
         img.create()
         os.chdir(olddir)
 
