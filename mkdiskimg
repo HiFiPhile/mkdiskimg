@@ -237,7 +237,7 @@ def main():
             disk = json.load(fout)
         name = disk['name']
         size = disk['size']
-        parts = disk['parts']
+        parts = disk.get('parts', [])
         # These are optional
         tarballs = disk.get('tarballs', [])
         uploads = disk.get('uploads', [])
