@@ -120,38 +120,61 @@ class GuestfsImage(object):
                 start = int(part.get('start', '0'))
                 end = int(part.get('end', '0'))
                 size = int(self.handle_size(part.get('size', '0')) / 512)
-                if start == 0:
-                    start =  self.offsetex if part['type'] == 'l' else self.offset
-                if end == 0 and size != 0:
-                    end = start + size - 1
-                if part['type'] == 'p':
+                type = part.get('type', 'p')
+                if self.label =='mbr':
+                    if start == 0:
+                        start =  self.offsetex if part['type'] == 'l' else self.offset
+                    if end == 0 and size != 0:
+                        end = start + size - 1
+                    if part['type'] == 'p':
+                        self.offset = end + 1
+                    if part['type'] == 'e':
+                        self.offset = end + 1
+                        # Logical partition start at 1M after extended partition
+                        self.offsetex = start + 2048
+                    if part['type'] == 'l':
+                        self.offsetex = end + 2049
+                else:
+                    if start == 0:
+                        start = self.offset
+                    if end == 0 and size != 0:
+                        end = start + size - 1
                     self.offset = end + 1
-                if part['type'] == 'e':
-                    self.offset = end + 1
-                    # Logical partition start at 1M after extended partition
-                    self.offsetex = start + 2048
-                if part['type'] == 'l':
-                    self.offsetex = end + 2049
-                gfs.part_add(disk, part['type'], start, end)
+                gfs.part_add(disk, type, start, end)
                 # identify the partition
                 partnum = gfs.part_list(disk)[-1]["part_num"]
                 partname = f'/dev/sda{str(partnum)}'
                 # sometimes, we want to set the gpt type of the partition
                 gpt_type = part.get("gpt_type", None)
                 mbr_type = part.get("mbr_type", None)
-                if self.label =='gpt' and gpt_type:
-                    gfs.part_set_gpt_type(disk, partnum, gpt_type)
+                part_label = part.get("label", None)
+                if self.label =='gpt':
+                    if gpt_type:
+                        gfs.part_set_gpt_type(disk, partnum, gpt_type)
+                    if part_label:
+                        gfs.part_set_name(disk, partnum, part_label)
                 if self.label =='mbr' and mbr_type:
                     id = int(mbr_type, base=16)
                     gfs.part_set_mbr_id(disk, partnum, id)
                 if self.label =='mbr' and part.get("active", False):
                     gfs.part_set_bootable(disk, partnum, True)
-                if part['type'] != 'e':
+                if type != 'e':
                 # format the partition
                     if part['filesystem'] == 'swap':
                         gfs.mkswap(partname, label=part.get('label'))
-                    else:
+                    elif part['filesystem'] != 'raw':
                         gfs.mkfs(part['filesystem'], partname, label=part.get('label'))
+                    elif 'raw_image' in part:
+                        with open(part['raw_image'], 'rb') as f:
+                            size = os.path.getsize(part['raw_image'])
+                            data = f.read(0x10000 if size > 0x10000 else size)
+                            offset = 0
+                            while data:
+                                gfs.pwrite_device(partname, data, offset)
+                                size -= len(data)
+                                if size == 0: break
+                                offset += len(data)
+                                data = f.read(0x10000 if size > 0x10000 else size)
             # do 'tar-in'. in guestfs-speak that means extract
             # a tarball from the host to the image, we use it to create
             # rootfs in the image
@@ -199,13 +222,14 @@ class GuestfsImage(object):
                 with open(binary['source'], 'rb') as f:
                     source_offset = int(binary.get('source_offset', '0'), base=0)
                     target_offset = int(binary.get('target_offset', '0'), base=0)
+                    part = binary.get('part', '')
                     size = self.handle_size(binary.get('size', '0'))
                     if size == 0:
                         size = os.path.getsize(binary['source']) - source_offset
                     f.seek(source_offset)
                     data = f.read(0x10000 if size > 0x10000 else size)
                     while data:
-                        gfs.pwrite_device('/dev/sda', data, target_offset)
+                        gfs.pwrite_device(f'/dev/sda{part}', data, target_offset)
                         size -= len(data)
                         if size == 0: break
                         target_offset += len(data)
