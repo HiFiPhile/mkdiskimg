@@ -19,12 +19,12 @@ Create disk image file for embedded system or virtual machine.
 {
     "name" : "full",
     "size" : "64M",
-    "label" : "mbr",
+    "partition_table" : "hybrid",
     "parts" : [
         {
             "filesystem" : "vfat",
             "type" : "p",
-            "mbr_type" : "0x0b",
+            "mbr_id" : "0x0b",
             "gpt_type" : "C12A7328-F81F-11D2-BA4B-00A0C93EC93B",
             "start" : "2048",
             "end" : "4095"
@@ -32,13 +32,13 @@ Create disk image file for embedded system or virtual machine.
         {
             "filesystem" : "ext4",
             "type" : "p",
-            "mbr_type" : "0x83",
+            "mbr_id" : "0x83",
             "size" : "60M"
         },
         {
             "filesystem" : "swap",
             "type" : "p",
-            "mbr_type" : "0x82",
+            "mbr_id" : "0x82",
             "end" : "-40"
         }
     ],
