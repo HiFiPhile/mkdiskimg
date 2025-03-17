@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # Copyright (c) Red Hat
-# Copyright (c) 2023 Zixun LI (HiFiPhile)
+# Copyright (c) 2023-2025 Zixun LI (HiFiPhile)
 #
 # mkdiskimg is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -22,6 +22,24 @@ import sys
 import glob
 import guestfs
 import ctypes
+
+
+class MBR(ctypes.Structure):
+    class Entry(ctypes.Structure):
+        _fields_ = [('_', ctypes.c_uint8, 7),
+                    ('active', ctypes.c_uint8, 1),
+                    ('first_chs', ctypes.c_uint8 * 3),
+                    ("partition_type", ctypes.c_uint8),
+                    ("last_chs", ctypes.c_uint8 * 3),
+                    ("first_lba", ctypes.c_uint32),
+                    ("sectors", ctypes.c_uint32)]
+
+    _pack_ = 1
+    _fields_ = [('bootstrap', ctypes.c_uint8 * 446),
+                ("entries", Entry * 4),
+                ("signature", ctypes.c_uint16)]
+
+
 class GuestfsImage:
     """Class representing an image created by guestfs. 'size' is the
     desired image size, valid formats are a digit string (size in
@@ -56,13 +74,13 @@ class GuestfsImage:
     def handle_compress(tarname):
         """Simple function to handle compression method of tarball.
         """
-        method = {'.gz' : 'gzip', '.bz' : 'bzip2', '.xz' : 'xz', '.Z' : 'compress', '.lzo' : 'lzop'}
+        method = {'.gz': 'gzip', '.bz': 'bzip2', '.xz': 'xz', '.Z': 'compress', '.lzo': 'lzop'}
         _, ext = os.path.splitext(tarname)
         return method.get(ext)
 
     class Partition:
         def __init__(self, args):
-            # Offset will be updated during 
+            # Offset will be updated during disk creation
             self.start = int(args.get('start', '0'), 0)
             self.end = int(args.get('end', '0'), 0)
             self.size = (GuestfsImage.handle_size(args.get('size', '0')) + 511) // 512
@@ -79,57 +97,44 @@ class GuestfsImage:
             else:
                 self.mbr_id = None
             self.active = args.get("active", False)
-    
-    class MBR(ctypes.Structure):
-        class Entry(ctypes.Structure):
-            _fields_ = [('_', ctypes.c_uint8, 7),
-                        ('active', ctypes.c_uint8, 1),
-                        ('first_chs', ctypes.c_uint8 * 3),
-                        ("partition_type", ctypes.c_uint8),
-                        ("last_chs", ctypes.c_uint8 * 3),
-                        ("first_lba", ctypes.c_uint32),
-                        ("sectors", ctypes.c_uint32)]
-            
-        _pack_ = 1
-        _fields_ = [('bootstrap', ctypes.c_uint8 * 446),
-                    ("entries", Entry * 4),
-                    ("signature", ctypes.c_uint16)]
-    
-    def __init__(self, name, size, imgver='', image_format='raw', partition_table='mbr', parts=None,
-                 tarballs=None, uploads=None, writes=None, binarys=None):
-        self.filename = name
-        self.size = self.handle_size(size)
-        self.image_format = image_format
-        self.partition_table = partition_table
+            # Populate partition contents
+            self.tarballs = args.get('tarballs', [])
+            self.uploads = args.get('uploads', [])
+            self.writes = args.get('writes', [])
+            self.binaries = args.get('binaries', [])
+            # Fix relative paths
+            for tarball in self.tarballs:
+                tarball['source'] = glob.glob(os.path.expandvars(os.path.expanduser(tarball['source'])))
+            for upload in self.uploads:
+                upload['source'] = glob.glob(os.path.expandvars(os.path.expanduser(upload['source'])))
+            for write in self.writes:
+                write['content'] = os.path.expandvars(write['content'])
+            for binary in self.binaries:
+                binary['source'] = os.path.expandvars(os.path.expanduser(binary['source']))
+
+    def __init__(self, args: dict):
+        self.filename = args['name']
+        self.size = self.handle_size(args['size'])
+        self.image_format = args.get('image_format', 'raw')
+        self.partition_table = args.get('partition_table', 'mbr')
         # Start at 1M offset by default
         self.offset = 2048
         self.offsetex = 2048
-        self.parts : list[GuestfsImage.Partition] = []
-        self.tarballs = []
-        self.uploads = []
-        self.writes = []
-        self.binarys = []
-        if parts:
-            for part in parts:
-                self.parts.append(self.Partition(part))
-        if tarballs:
-            self.tarballs = tarballs
-        if uploads:
-            self.uploads = uploads
-        if writes:
-            self.writes = writes
-        if binarys:
-            self.binarys = binarys
-
+        self.binaries = []
+        self.parts = []
+        for part in args.get('parts', []):
+            self.parts.append(self.Partition(part))
+        self.binaries = args.get('binaries', [])
+        # Fix relative paths
+        for binary in self.binaries:
+            binary['source'] = os.path.expandvars(os.path.expanduser(binary['source']))
+        imgver = args.get('imgver', '')
         if imgver:
             self.filename = "{0}_{1}".format(self.filename, imgver)
         self.filename = "{0}.{1}.img".format(self.filename, self.image_format)
+        self.create_disk()
 
-    def create(self):
-        """Create the image. The unused arg is the 'textinst' arg that
-        only VirtInstallImages care about (but which has to be passed
-        here too).
-        """
+    def create_disk(self):
         gfs = guestfs.GuestFS(python_return_dict=True)
         try:
             # Create the disk image with a temporary name
@@ -140,108 +145,13 @@ class GuestfsImage:
             gfs.launch()
             # identify the disk and create a disk label
             disk = gfs.list_devices()[0]
-            gfs.part_init(disk, self.partition_table if self.partition_table != 'hybrid' else 'gpt')
-            # create and format the partitions
-            for part in self.parts:
-                # create the partition: the dict must specify type ('p'
-                # for primary, 'l' for logical, 'e' for extended), and
-                # start and end sector numbers - more details in
-                # guestfs docs
-                if self.partition_table =='mbr':
-                    if part.start == 0:
-                        part.start = self.offsetex if part.type == 'l' else self.offset
-                    if part.end == 0 and part.size != 0:
-                        part.end = part.start + part.size - 1
-                    if part.type == 'p':
-                        self.offset = part.end + 1
-                    if part.type == 'e':
-                        self.offset = part.end + 1
-                        # Logical partition start at 1M after extended partition
-                        self.offsetex = part.start + 2048
-                    if part.type == 'l':
-                        self.offsetex = part.end + 2049
-                else:
-                    if part.start == 0:
-                        part.start = self.offset
-                    if part.end == 0 and part.size != 0:
-                        part.end = part.start + part.size - 1
-                    self.offset = part.end + 1
-                gfs.part_add(disk, part.type, part.start, part.end)
-                # identify the partition
-                partnum = gfs.part_list(disk)[-1]["part_num"]
-                partname = f'/dev/sda{str(partnum)}'
-                # sometimes, we want to set the gpt type of the partition
-                if self.partition_table in {'gpt', 'hybrid'}:
-                    if part.gpt_type:
-                        gfs.part_set_gpt_type(disk, partnum, part.gpt_type)
-                    if part.part_label:
-                        gfs.part_set_name(disk, partnum, part.part_label)
-                elif self.partition_table =='mbr':
-                    if part.mbr_id:
-                        gfs.part_set_mbr_id(disk, partnum, part.mbr_id)
-                    if part.active:
-                        gfs.part_set_bootable(disk, partnum, True)
-                if part.type != 'e':
-                    # format the partition
-                    if part.filesystem == 'swap':
-                        gfs.mkswap(partname, label=part.part_label)
-                    elif part.filesystem != 'raw':
-                        gfs.mkfs(part.filesystem, partname, label=part.part_label)
-                    elif part.raw_image:
-                        with open(part.raw_image, 'rb') as f:
-                            size = os.path.getsize(part.raw_image)
-                            data = f.read(0x10000 if size > 0x10000 else size)
-                            offset = 0
-                            while data:
-                                gfs.pwrite_device(partname, data, offset)
-                                size -= len(data)
-                                if size == 0: break
-                                offset += len(data)
-                                data = f.read(0x10000 if size > 0x10000 else size)
-            # do 'tar-in'. in guestfs-speak that means extract
-            # a tarball from the host to the image, we use it to create
-            # rootfs in the image
-            for tarball in self.tarballs:
-                # as with write, the dict must specify a target
-                # partition and location ('target')
-                partn = f"/dev/sda{tarball['part']}"
-                gfs.mount(partn, "/")
-                for file in tarball['source']:
-                    gfs.tar_in(file, tarball['target'],
-                            compress=self.handle_compress(file),
-                            xattrs=True, selinux=True, acls=True)
-                gfs.sync()
-                gfs.umount_opts("/")
-            # do file 'uploads'. in guestfs-speak that means transfer
-            # a file from the host to the image, we use it to mean
-            # download a file from an http server and transfer that
-            # to the image
-            for upload in self.uploads:
-                # as with write, the dict must specify a target
-                # partition and location ('target')
-                partn = f"/dev/sda{upload['part']}"
-                gfs.mount(partn, "/")
-                for file in upload['source']:
-                    target = upload['target'] if os.path.basename(upload['target']) \
-                        else os.path.join(os.path.abspath(upload['target']), os.path.basename(file))
-                    gfs.upload(file, target)
-                gfs.sync()
-                gfs.umount_opts("/")
-            # do file 'writes' (create a file with a given string as
-            # its content)
-            for write in self.writes:
-                # the write dict must specify the partition to be
-                # written to, numbered from 1 as humans usually do;
-                # find that part and mount it
-                partn = f"/dev/sda{write['part']}"
-                gfs.mount(partn, "/")
-                # do the write: the dict must specify the target path
-                # and the string to be written ('content')
-                gfs.write(write['path'], write['content'])
-                gfs.sync()
-                gfs.umount_opts("/")
-            # do binary raw writes
-            for binary in self.binarys:
+            if self.partition_table != 'raw':
+                gfs.part_init(disk, self.partition_table if self.partition_table != 'hybrid' else 'gpt')
+                # create and format the partitions
+                for part in self.parts:
+                    self.create_partition(gfs, disk, part)
+            # do disk level binary raw writes
+            for binary in self.binaries:
                 with open(binary['source'], 'rb') as f:
                     source_offset = int(binary.get('source_offset', '0'), base=0)
                     target_offset = int(binary.get('target_offset', '0'), base=0)
@@ -254,16 +164,17 @@ class GuestfsImage:
                     while data:
                         gfs.pwrite_device(f'/dev/sda{part}', data, target_offset)
                         size -= len(data)
-                        if size == 0: break
+                        if size == 0:
+                            break
                         target_offset += len(data)
                         data = f.read(0x10000 if size > 0x10000 else size)
             # Craft MBR partition table
             if self.partition_table == 'hybrid':
-                mbr = GuestfsImage.MBR()
+                mbr = MBR()
                 mbr.signature = 0xAA55
                 # MBR has 4 maximum partitions, 1st must be GPT protection partition
                 part_limit = 3
-                protect = GuestfsImage.MBR.Entry()
+                protect = MBR.Entry()
                 protect.partition_type = 0xEE
                 protect.first_lba = 1
                 protect.sectors = 33
@@ -271,7 +182,7 @@ class GuestfsImage:
                 for partnum, part in enumerate(self.parts):
                     if partnum >= part_limit:
                         break
-                    entry = GuestfsImage.MBR.Entry()
+                    entry = MBR.Entry()
                     entry.active = 1 if part.active else 0
                     entry.partition_type = part.mbr_id
                     entry.first_lba = part.start
@@ -291,6 +202,110 @@ class GuestfsImage:
             gfs.shutdown()
             gfs.close()
 
+    def create_partition(self, gfs: guestfs.GuestFS, disk: str, part: Partition):
+        # create the partition: the dict must specify type ('p'
+        # for primary, 'l' for logical, 'e' for extended), and
+        # start and end sector numbers - more details in
+        # guestfs docs
+        if self.partition_table == 'mbr':
+            if part.start == 0:
+                part.start = self.offsetex if part.type == 'l' else self.offset
+            if part.end == 0 and part.size != 0:
+                part.end = part.start + part.size - 1
+            if part.end < 0:
+                part.end += self.size // 512
+            if part.type == 'p':
+                self.offset = part.end + 1
+            if part.type == 'e':
+                self.offset = part.end + 1
+                # Logical partition start at 1M after extended partition
+                self.offsetex = part.start + 2048
+            if part.type == 'l':
+                self.offsetex = part.end + 2049
+        else:
+            if part.start == 0:
+                part.start = self.offset
+            if part.end == 0 and part.size != 0:
+                part.end = part.start + part.size - 1
+            if part.end < 0:
+                part.end += self.size // 512
+            self.offset = part.end + 1
+        gfs.part_add(disk, part.type, part.start, part.end)
+        # identify the partition
+        partnum = gfs.part_list(disk)[-1]["part_num"]
+        partname = f'/dev/sda{str(partnum)}'
+        # sometimes, we want to set the gpt type of the partition
+        if self.partition_table in {'gpt', 'hybrid'}:
+            if part.gpt_type:
+                gfs.part_set_gpt_type(disk, partnum, part.gpt_type)
+            if part.part_label:
+                gfs.part_set_name(disk, partnum, part.part_label)
+        elif self.partition_table == 'mbr':
+            if part.mbr_id:
+                gfs.part_set_mbr_id(disk, partnum, part.mbr_id)
+            if part.active:
+                gfs.part_set_bootable(disk, partnum, True)
+        if part.type != 'e':
+            # format the partition
+            if part.filesystem == 'swap':
+                gfs.mkswap(partname, label=part.part_label)
+            elif part.filesystem != 'raw':
+                gfs.mkfs(part.filesystem, partname, label=part.part_label)
+            elif part.raw_image:
+                with open(part.raw_image, 'rb') as f:
+                    size = os.path.getsize(part.raw_image)
+                    data = f.read(0x10000 if size > 0x10000 else size)
+                    offset = 0
+                    while data:
+                        gfs.pwrite_device(partname, data, offset)
+                        size -= len(data)
+                        if size == 0:
+                            break
+                        offset += len(data)
+                        data = f.read(0x10000 if size > 0x10000 else size)
+        if part.tarballs or part.uploads or part.writes:
+            # as with write, the dict must specify a target partition
+            gfs.mount(partname, "/")
+            # do 'tar-in'. in guestfs-speak that means extract
+            # a tarball from the host to the image, we use it to create
+            # rootfs in the image
+            for tarball in part.tarballs:
+                for file in tarball['source']:
+                    gfs.tar_in(file, tarball['target'],
+                               compress=self.handle_compress(file),
+                               xattrs=True, selinux=True, acls=True)
+            # do file 'uploads'. in guestfs-speak that means transfer
+            # a file from the host to the image
+            for upload in part.uploads:
+                for file in upload['source']:
+                    target = upload['target'] if os.path.basename(upload['target']) \
+                        else os.path.join(os.path.abspath(upload['target']), os.path.basename(file))
+                    gfs.upload(file, target)
+            # do file 'writes' (create a file with a given string as
+            # its content)
+            for write in part.writes:
+                gfs.write(write['target'], write['content'])
+            gfs.sync()
+            gfs.umount_opts("/")
+        # do partition level binary raw writes
+        for binary in part.binaries:
+            with open(binary['source'], 'rb') as f:
+                source_offset = int(binary.get('source_offset', '0'), base=0)
+                target_offset = int(binary.get('target_offset', '0'), base=0)
+                size = self.handle_size(binary.get('size', '0'))
+                if size == 0:
+                    size = os.path.getsize(binary['source']) - source_offset
+                f.seek(source_offset)
+                chunk_size = 0x10000
+                while size > 0:
+                    data = f.read(min(chunk_size, size))
+                    if not data:
+                        break
+                    gfs.pwrite_device(partname, data, target_offset)
+                    size -= len(data)
+                    target_offset += len(data)
+
+
 def main():
     """Main loop - set up logging, parse args, run subcommand
     function.
@@ -303,37 +318,19 @@ def main():
     try:
         with open(sys.argv[1], 'r') as fout:
             disk = json.load(fout)
-        name = disk['name']
-        size = disk['size']
-        image_format = disk.get('image_format', 'raw')
-        parts = disk.get('parts', [])
-        # These are optional
-        tarballs = disk.get('tarballs', [])
-        uploads = disk.get('uploads', [])
-        writes = disk.get('writes', [])
-        binarys = disk.get('binarys', [])
-        imgver = disk.get('imgver')
-        partition_table = disk.get('partition_table', 'mbr')
 
         # Fix path
         olddir = os.getcwd()
         newdir = os.path.dirname(os.path.abspath(sys.argv[1]))
         os.chdir(newdir)
-        for tarball in tarballs:
-            tarball['source'] = glob.glob(os.path.expanduser(tarball['source']))
-        for upload in uploads:
-            upload['source'] = glob.glob(os.path.expanduser(upload['source']))
-        for binary in binarys:
-            binary['source'] = os.path.expanduser(binary['source'])
 
-        img = GuestfsImage(name, size, imgver, image_format, partition_table, parts,
-                           tarballs, uploads, writes, binarys)
-        img.create()
+        GuestfsImage(disk)
         os.chdir(olddir)
 
     except KeyboardInterrupt:
         sys.stderr.write("Interrupted, exiting...\n")
         sys.exit(1)
+
 
 if __name__ == '__main__':
     main()
