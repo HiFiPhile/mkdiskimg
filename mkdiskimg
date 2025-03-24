@@ -74,7 +74,8 @@ class GuestfsImage:
     def handle_compress(tarname):
         """Simple function to handle compression method of tarball.
         """
-        method = {'.gz': 'gzip', '.bz': 'bzip2', '.xz': 'xz', '.Z': 'compress', '.lzo': 'lzop'}
+        method = {'.gz': 'gzip', '.bz': 'bzip2', '.xz': 'xz', '.Z': 'compress', '.lzo': 'lzop',
+                  '.zst': 'zstd', '.zstd': 'zstd'}
         _, ext = os.path.splitext(tarname)
         return method.get(ext)
 
