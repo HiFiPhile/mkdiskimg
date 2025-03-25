@@ -89,6 +89,9 @@ class GuestfsImage:
             self.raw_image = args.get('raw_image', None)
             self.type = args.get('type', 'p')
             self.part_label = args.get("label", None)
+            self.block_size = args.get("block_size", None)
+            if self.block_size:
+                self.block_size = int(self.block_size)
             # GPT
             self.gpt_type = args.get("gpt_type", None)
             # MBR
@@ -251,7 +254,7 @@ class GuestfsImage:
             if part.filesystem == 'swap':
                 gfs.mkswap(partname, label=part.part_label)
             elif part.filesystem != 'raw':
-                gfs.mkfs(part.filesystem, partname, label=part.part_label)
+                gfs.mkfs(part.filesystem, partname, blocksize=part.block_size, label=part.part_label)
             elif part.raw_image:
                 with open(part.raw_image, 'rb') as f:
                     size = os.path.getsize(part.raw_image)
