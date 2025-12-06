@@ -115,13 +115,13 @@ class GuestfsImage:
         """
         size = str(size)
         if size.endswith('G') or size.endswith('GB') or size.endswith('GiB'):
-            return int(size.split('G')[0]) * 1024 * 1024 * 1024
+            return int(size.split('G')[0], 0) * 1024 * 1024 * 1024
         elif size.endswith('M') or size.endswith('MB') or size.endswith('MiB'):
-            return int(size.split('M')[0]) * 1024 * 1024
+            return int(size.split('M')[0], 0) * 1024 * 1024
         elif size.endswith('K') or size.endswith('KB') or size.endswith('KiB'):
-            return int(size.split('K')[0]) * 1024
+            return int(size.split('K')[0], 0) * 1024
         else:
-            return int(size)
+            return int(size, 0)
 
     @staticmethod
     def handle_compress(tarname):
@@ -341,6 +341,7 @@ class GuestfsImage:
             # do file 'writes' (create a file with a given string as
             # its content)
             for write in part.writes:
+                gfs.mkdir_p(os.path.dirname(write['target']))
                 gfs.write(write['target'], write['content'])
             gfs.sync()
             gfs.umount_opts("/")
