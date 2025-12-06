@@ -229,7 +229,7 @@ class GuestfsImage:
             if self.partition_table == 'hybrid':
                 mbr = MBR()
                 mbr.signature = 0xAA55
-                # MBR has 4 maximum partitions, 1st must be GPT protection partition
+                # MBR has 4 maximum partitions, one must be GPT protective partition
                 part_limit = 3
                 protect = MBR.Entry()
                 protect.partition_type = 0xEE
@@ -363,14 +363,95 @@ class GuestfsImage:
                     target_offset += len(data)
 
 
+def print_help():
+    """Print detailed help information."""
+    print("Usage: mkdiskimg <config.json>")
+    print("       mkdiskimg -h|--help")
+    print("")
+    print("Create disk images with partitions and content from JSON configuration.")
+    print("")
+    print("Configuration structure:")
+    print("  Root properties:")
+    print("    name              - Image filename (without extension)")
+    print("    size              - Image size (e.g., '64M', '1G', or bytes)")
+    print("    image_format      - Image file format: 'raw', 'qcow2', 'vmdk', etc.")
+    print("                        Default: 'raw'")
+    print("    partition_table   - Partition table type:")
+    print("                        'mbr': Standard MBR (default)")
+    print("                        'gpt': GUID Partition Table")
+    print("                        'hybrid': GPT with MBR, which includes")
+    print("                                  first 3 partitions and GPT protective partition")
+    print("                        'raw': No partition table")
+    print("    imgver            - Optional version string appended to filename")
+    print("    parts             - Array of partition definitions")
+    print("    binaries          - Array of raw binary writes at disk level")
+    print("")
+    print("  Partition properties:")
+    print("    Layout:")
+    print("      type            - Partition type:")
+    print("                        'p': Primary partition (default)")
+    print("                        'l': Logical partition (MBR only)")
+    print("                        'e': Extended partition (MBR only)")
+    print("      start           - Start sector number (auto-calculated if 0)")
+    print("      end             - End sector number (negative = offset from disk end)")
+    print("      size            - Partition size (e.g., '32M', '1G')")
+    print("                        Converted to sectors, overrides 'end' if set")
+    print("")
+    print("    Filesystem:")
+    print("      filesystem      - Filesystem type: 'ext4', 'ext3', 'vfat', 'swap', 'raw'")
+    print("                        'raw': No filesystem formatting")
+    print("                        Default: 'ext4'")
+    print("      block_size      - Filesystem block size in bytes")
+    print("      label           - Partition/filesystem label (name)")
+    print("")
+    print("    Partition table:")
+    print("      mbr_id          - MBR partition type ID (hex, e.g., '0x83' for Linux,")
+    print("                        '0x0b' for FAT32, '0x05' for extended) [MBR only]")
+    print("      gpt_type        - GPT partition type GUID (e.g.,")
+    print("                        'C12A7328-F81F-11D2-BA4B-00A0C93EC93B' for EFI)")
+    print("                        [GPT/hybrid only]")
+    print("      active          - Set bootable/active flag [MBR only]")
+    print("")
+    print("    Content:")
+    print("      raw_image       - Copy raw image file directly to partition")
+    print("      tarballs        - Extract tarballs into mounted partition:")
+    print("                        [{'source': 'rootfs.tar.gz', 'target': '/'}]")
+    print("                        Supports: .gz, .bz, .xz, .Z, .lzo, .zst")
+    print("      uploads         - Copy files to mounted partition:")
+    print("                        [{'source': 'file.txt', 'target': '/etc/'}]")
+    print("                        Source supports glob patterns and env variables")
+    print("      writes          - Create files with specified content:")
+    print("                        [{'target': '/etc/hostname', 'content': 'myhost'}]")
+    print("      binaries        - Raw binary writes at partition level")
+    print("")
+    print("    Binary write properties:")
+    print("      source          - Source file path (supports env variables and ~)")
+    print("      source_offset   - Byte offset in source file (hex or decimal)")
+    print("                        Default: '0'")
+    print("      target_offset   - Byte offset in target disk/partition (hex or decimal)")
+    print("                        Default: '0'")
+    print("      size            - Number of bytes to write (hex or decimal)")
+    print("                        Default: entire file from source_offset")
+    print("      part            - Partition number for disk-level binaries (optional)")
+    print("")
+    print("Notes:")
+    print("  - JSON config supports // and /* */ style comments")
+    print("  - Paths support environment variables ($VAR) and tilde (~)")
+    print("  - Glob patterns (* and ?) supported in upload sources")
+    print("  - Default partition start is 1M (2048 sectors) for alignment")
+
+
 def main():
     """Main loop - set up logging, parse args, run subcommand
     function.
     """
+    if len(sys.argv) == 2 and sys.argv[1] in ('-h', '--help'):
+        print_help()
+        sys.exit(0)
+
     if len(sys.argv) != 2:
-        print("mkdiskimg <config file>")
-        print("")
-        print("Create disk image file from configuration.")
+        print("Usage: mkdiskimg <config.json>")
+        print("       mkdiskimg -h|--help")
         sys.exit(1)
     try:
         with open(sys.argv[1], 'r') as fout:
