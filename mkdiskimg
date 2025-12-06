@@ -23,6 +23,59 @@ import glob
 import guestfs
 import ctypes
 
+def strip_json_comments(text):
+    """Remove // and /* */ style comments from JSON text.
+    """
+    result = []
+    i = 0
+    in_string = False
+    escape = False
+
+    while i < len(text):
+        char = text[i]
+
+        # Handle string literals
+        if char == '"' and not escape:
+            in_string = not in_string
+            result.append(char)
+            i += 1
+            escape = False
+            continue
+
+        # Handle escape sequences in strings
+        if in_string:
+            if escape:
+                escape = False
+            elif char == '\\':
+                escape = True
+            result.append(char)
+            i += 1
+            continue
+
+        # Handle comments outside strings
+        if char == '/' and i + 1 < len(text):
+            next_char = text[i + 1]
+            # Single-line comment
+            if next_char == '/':
+                # Skip until end of line
+                while i < len(text) and text[i] not in '\r\n':
+                    i += 1
+                continue
+            # Multi-line comment
+            elif next_char == '*':
+                # Skip until */
+                i += 2
+                while i < len(text) - 1:
+                    if text[i] == '*' and text[i + 1] == '/':
+                        i += 2
+                        break
+                    i += 1
+                continue
+
+        result.append(char)
+        i += 1
+
+    return ''.join(result)
 
 class MBR(ctypes.Structure):
     class Entry(ctypes.Structure):
@@ -321,7 +374,9 @@ def main():
         sys.exit(1)
     try:
         with open(sys.argv[1], 'r') as fout:
-            disk = json.load(fout)
+            json_cfg = fout.read()
+            json_cfg = strip_json_comments(json_cfg)
+            disk = json.loads(json_cfg)
 
         # Fix path
         olddir = os.getcwd()
