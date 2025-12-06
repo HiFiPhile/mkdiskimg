@@ -145,7 +145,7 @@ class GuestfsImage:
             tmpfile = "{0}.tmp".format(self.filename)
             gfs.disk_create(tmpfile, self.image_format, self.size)
             # 'launch' guestfs with the disk attached
-            gfs.add_drive(tmpfile, format=self.image_format, readonly=0)
+            gfs.add_drive(tmpfile, format=self.image_format, readonly=False)
             gfs.launch()
             # identify the disk and create a disk label
             disk = gfs.list_devices()[0]
@@ -198,7 +198,7 @@ class GuestfsImage:
         except:
             # if anything went wrong, we want to wipe the temp file
             # then raise
-            os.remove(tmpfile)
+            os.remove(tmpfile) # type: ignore
             raise
         finally:
             # whether things go right or wrong, we want to close the
