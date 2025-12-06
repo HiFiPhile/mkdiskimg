@@ -1,5 +1,8 @@
 ### Hybrid (MBR + GPT) disk image
 
+Useful for microprocessors that only support booting from MBR partitioned disks, but
+the system requires GPT partitioning for other purposes. Such as Mcrochip SAM9X60, SAMA5D2.
+
 - Create `disk.img` qcow2 format image with 1G size and hybrid label.
 - Create one 16M EFI vfat partition; four 200M ext4 partitions.
 - Extract rootfs achieve `root_fs/rootfs.tar.gz` to 1st ext4 partition.
